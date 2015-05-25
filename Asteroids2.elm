@@ -1,7 +1,17 @@
 module Asteroids2 where
 
 {-| 
-Doc goes here 
+LOOK OUT! SPACE PIRATES!
+
+Player Controls:
+
+    arrow keys: turn left & right and accelerate forward & backward.
+    shift key: launch torpedoes at the current hostile target.
+
+This is a small game modeled after LOOK OUT! SPACE ROCKS! (asteroids).
+This particular mini game is exploring how combat might work.
+The ultimate goal would be to make a more complicated 2D space trader game
+playable in the browser.  We'll see how far we get before losing steam.  
 
 nice milky way pic:
     http://apod.nasa.gov/apod/image/0510/allskymilkyway_brunier_big.jpg
@@ -10,6 +20,35 @@ nice milky way pic:
 and:
     http://www.sidleach.com/summer_milky_way.jpg
     ^this was taken by Sid Leach in 2004, unsure of C
+
+-}
+
+{-|
+Some things learned:
+
+1) It may be possible to  improve rendering speeds:
+https://groups.google.com/forum/#!topic/elm-discuss/xHfioP_anUY
+this could be important for future developments.
+eg: if we wanted to generate new star fields at run time.
+
+2) Having vessels target each other is tricky.  You might like them to each
+have a reference to the vessel they are targeting, but after an update that
+reference would be to the version of the target that existed last tick, 
+not the current version!  
+Instead we are going to try the method used in the elm architecture article:
+https://github.com/evancz/elm-architecture-tutorial#the-elm-architecture
+where the records that need to be identified have an integer "id".  We'll
+try keeping them all in a Dict.Dict structure with the IDs as keys, and see
+how that goes.
+
+3) Perhaps because js is single threaded, but if you leave the game running 
+in a browser tab but click to a different tab, then it won't update (tick)
+until you click back to the game tab, BUT it will keep track of how much
+time has elapsed since the last tick!  This means that it will tick 
+immediately on return with a very large tick time, so things like moveObj
+will have huge time arguments.  So a pirate that was orbiting the player
+in a somewhat stable fashion will have flown way way off the screen (because
+only linear ballistic motion is simulated)!
 
 -}
 
@@ -25,11 +64,16 @@ import Window
 import Keyboard
 import Mouse
 import List
+import Dict
 import Maybe 
-import Random
+import Random       
 
-import Debug
-
+import Debug  
+{-|
+use Debug.watch to observe variables of interest
+call: Debug.watch "foo = " foo 
+anywhere in order to see the value of foo in the elm reactor debug mode.
+-}
 
 {-|
 Four Sections:
@@ -83,46 +127,70 @@ type alias Input =
 (gameW,gameH) = (halfW*2,halfH*2)
 tileL = (max halfW halfH)*2
 
+-- faction enums
+playerFact = 1
+pirateFact = 2
+merchantFact = 3
+-- faction dicts
+playerDict = 
+    [ (playerFact , False)
+    , (pirateFact , True)
+    , (merchantFact , False)
+    ] |> Dict.fromList
+pirateDict = 
+    [ (playerFact , True)
+    , (pirateFact , False)
+    , (merchantFact , True)
+    ] |> makeDict
+merchantDict = 
+    [ (playerFact , False)
+    , (pirateFact , True)
+    , (merchantFact , False)
+    ] |> makeDict
+
+hostilityDict =
+    [ (playerFact , playerDict)
+    , (pirateFact , pirateDict)
+    , (merchantFact , merchantDict)
+    ] |> makeDict
+
+
+
+
 type alias Game = 
-    { player : Vessel               -- The player's vessel
-    , pirate : Vessel               -- pirate vessel
+    { playerID : Int                -- the ID of the player's vessel
     , camera : (Float,Float)        -- The coordinates of the camera
-    , stars : List (Float,Float)
     , booms : List Boom             -- explosions
+    , nextID : Int
+    , vessels : Dict.Dict Int Vessel -- Dict containing all the vessels
     }
 
 startGame : Game
 startGame =
-    { player = initPlayer
-    , pirate = initPirate
+    { playerID = 1
     , camera = (0,0)
-    , stars = createStars (0,0)
     , booms = []
+    , nextID = 4
+    , vessels = startingVessels
     }
-{-
-type alias Star =                           -- a background star
-    { x:Float , y:Float , z:Float           -- position and depth
-    , color:Color.Color , r:Float }         -- color and radius
-    -}
 
 type alias Object a =                -- a space object
     { a | x:Float , y:Float          -- position (px)
         , vx: Float , vy:Float       -- linear velocity (px/sec)
         , a: Float                   -- angle (rad) 
-        --, va:Float                   -- angvel (rad/sec)
         , r:Float                    -- radius(px)
         , drag:Float                 -- drag (ratio lost /sec)
         }
 
 type alias HasDrive a =
-    { a | thrust:Float
-        , retro:Float
-        , turn:Float
+    { a | thrust:Float              -- thrust is forward acceleration (px/s/s)
+        , retro:Float               -- retro is reverse acc (px/sec/sec)
+        , turn:Float                -- turn is turn rate (deg/sec)
         }
 
 type alias HasOffense a =
-    { a | torpReload:Float
-        , beamReload:Float
+    { a | torpReload:Float          -- time until can launch torps again (sec)
+        , beamReload:Float          -- time until can fire beams again (sec)
         }
 
 type alias HasDefense a =
@@ -137,14 +205,11 @@ type alias HasDefense a =
 type alias Vessel = Object 
     (HasOffense (HasDefense (HasDrive                  
     ({ image:String                          -- image name string
-    }))))
-    {-
-    { shield:Float                          -- shields
-    , thrust:Float                          -- forward accel (px/sec/sec)
-    , retro:Float                           -- reverse accel (px/sec/sec)
-    , turn:Float                            -- turn rate (deg/sec)
-    , image:String                          
-    }   -}                     
+        , id:Int
+        , faction:Int
+        , controls:ControlState
+        , newBooms:List Boom
+    }))))                
 
 initPlayer : Vessel
 initPlayer =
@@ -153,26 +218,90 @@ initPlayer =
     , thrust=200, retro=-50, turn= degrees 180
     , torpReload=0 , beamReload=0
     , shields=100 , shieldMax=100 , seekedBy=[]
-    , image="images/player2.png" }
+    , image="images/player2.png" , id=1
+    , faction=playerFact
+    , controls = {initControls| brain <- Player}
+    , newBooms = []
+    }
 
 initPirate : Vessel
 initPirate = 
-    { x=0,y=0,a=degrees -90, vx=-100, vy=-100
-    , r=8, drag=0.3
-    , thrust=200, retro=-50, turn= degrees 180
-    , torpReload=0 , beamReload=0
-    , shields=100 , shieldMax=100 , seekedBy=[]
-    , image="images/pirate1.png" }
+    newPirate (0,0) 2
 
-initTransport : Vessel
-initTransport = 
-    { x=0 , y=0 , a= degrees 180 , vx= 100 , vy=100
-    , r=10 , drag=0.3
-    , thrust=100 , retro=-50 , turn = degrees 90
+newPirate : (Float,Float) -> Int -> Vessel
+newPirate (x,y) id =
+    { x=x,y=y,a=0, vx=0, vy=0
+    , r=8, drag=0.3
+    , thrust=180, retro=-50, turn= degrees 150
     , torpReload=0 , beamReload=0
-    , shields=200 , shieldMax=200 , seekedBy=[]
-    , image="images/civ1.png"
+    , shields=35 , shieldMax=35 , seekedBy=[]
+    , image="images/pirate1.png" , id=id
+    , faction=pirateFact
+    , controls = {initControls| brain <- Attacker}
+    , newBooms = []
     }
+
+
+newTransport : (Float,Float) -> Int -> Vessel
+newTransport (x,y) id =
+    { x=x,y=y,a=0, vx=0, vy=0
+    , r=8, drag=0.3
+    , thrust=60, retro=-30, turn= degrees 100
+    , torpReload=0 , beamReload=0
+    , shields=75 , shieldMax=75 , seekedBy=[]
+    , image="images/civ1.png" , id=id
+    , faction=merchantFact
+    , controls = {initControls| brain <- Runner}
+    , newBooms = []
+    }    
+
+startingVessels : Dict.Dict Int Vessel
+startingVessels = 
+    [ (1 , initPlayer)
+    , (2 , newPirate (-100,-100) 2)
+    , (3 , newTransport (100,100) 3)
+    ] |> makeDict
+
+-- how has the vessel set its controls?
+type alias ControlState =
+    { x:Float                   -- turn left (+1) or right (-1)
+    , y:Float                   -- thrust forward (+1) or retro (-1)
+    , torpFire:Bool             -- attempting to fire torpedoes
+    , beamFire:Bool             -- attempting to fire beams
+    , tarID:Maybe Int           -- id of target
+    --, allyID:Maybe Int        -- id of an ally?
+    , behavior:Behavior         -- behavior
+    , brain:Brain               -- brain
+    }
+
+initControls : ControlState
+initControls = 
+    {x=0 , y=0              -- turn left/right and thrust/retro
+    , torpFire=False , beamFire=False
+    , tarID=Nothing 
+    --, tar=Nothing
+    , behavior=AllAhead 
+    , brain=Attacker
+    }    
+
+-- vessel behaviors: what is it trying to do doing right now?
+type Behavior = PlayerControl
+              | Chill 
+              | AllAhead
+              | Attack 
+              | Flee 
+              | Follow 
+              | GoTo (Float,Float)
+
+-- determines how a vessel chooses behaviors
+type Brain = Player 
+           | Attacker 
+           | Runner 
+
+
+
+
+
 
 -- a homing missile
 type alias Torpedo = Object
@@ -195,18 +324,6 @@ boomMaxAge = 0.15              -- explosions last this long
 boomGrowthRate = 120            -- explosions grow this fast 
 boomInitRadius = 12             -- explosions start this big
 
-createStars : (Int,Int) -> List (Float,Float)
-createStars xy =
-    let
-    makePt = Random.pair (Random.float -tileL tileL) 
-                         (Random.float -tileL tileL) 
-    makePts = Random.list 100 makePt 
-    findTile (x,y) = 0
-    seed = Random.initialSeed (findTile xy)
-    (stars,_) = Random.generate makePts seed
-    in
-    stars
-
 -- a beam
 type alias Beam =
     { start : (Float,Float)
@@ -218,6 +335,48 @@ type alias Beam =
 -- UPDATE
 
 -- useful functions:
+
+makeDict : List (comparable,v) -> Dict.Dict comparable v
+makeDict list =
+    let
+    foldD (k,v) dict =
+        Dict.insert k v dict
+    in
+    List.foldl foldD Dict.empty list
+
+-- given an id, get the vessel out of the game's dict, MAYBE
+getVessel : Game -> Int -> Maybe Vessel
+getVessel game id = Dict.get id game.vessels 
+
+-- given a maybe id, get the vessel out of the game's dict
+maybeGetVessel : Game -> Maybe Int -> Maybe Vessel
+maybeGetVessel game maybeID = 
+    case maybeID of
+        Nothing -> Nothing
+        Just id -> getVessel game id 
+
+
+-- are these two vessels hostile?
+isHostile : Vessel -> Vessel -> Bool
+isHostile ves1 ves2 =
+    case Dict.get ves1.faction hostilityDict of
+    Nothing -> False
+    Just dict -> 
+        case Dict.get ves2.faction dict of
+        Nothing -> False
+        Just x -> x
+
+-- get the nearest hostile to the vessel given
+-- right now it just gets A hostile, not the nearest!!
+getNearestHostile : Game -> Vessel -> Maybe Vessel
+getNearestHostile game vessel =
+    let
+    vessels = Dict.values game.vessels 
+    hostiles = List.filter (isHostile vessel) vessels 
+    in
+    case hostiles of 
+                [] -> Nothing
+                x :: xs -> Just x
 
 -- wrap angles to +pi -pi
 wrapAngle : Float -> Float
@@ -247,7 +406,7 @@ accObj t acc obj =
         vyDel = vec.y*t*acc 
     in { obj | vx <- obj.vx + vxDel , vy <- obj.vy + vyDel }
 
--- rotate object by angular velocity for some time
+-- rotate object by an angular velocity for some time
 rotObj : Time.Time -> Float -> Object a -> Object a 
 rotObj t va obj = 
     { obj | a <- obj.a + va * t |> wrapAngle }
@@ -262,6 +421,12 @@ isColliding obj1 obj2 =
 faceObj : Object a -> Object b -> Float
 faceObj obj1 obj2 =
     atan2 (obj2.y - obj1.y) (obj2.x-obj1.x)
+
+-- given a vessel and its target, should the vessel turn left or right?
+turnTowards : Object a -> Object b -> Float
+turnTowards obj1 obj2 =
+    if ( (faceObj obj1 obj2) - obj1.a |> wrapAngle ) > 0
+    then 1 else -1
 
 -- get unit vector for an angle
 -- angle should already be in elm's internal unit (radians)
@@ -278,44 +443,113 @@ getAng {x,y} = atan2 y x
 updateGame : Input -> Game -> Game
 updateGame input game =
     game
-    |> updatePlayer input                   -- update the player
-    |> updatePirate input                   -- update the pirate
+    |> updateVesselsControls input           -- update control states
+    |> updateVessels input                  -- update the vessels
     |> updateBooms input                    -- update explosions
     |> updateTorps input                    -- update the torpedoes
-    |> updatePlayerAttack input             -- maybe fire player weapons
-    |> updatePirateAttack input             -- maybe fire pirate weapons
+    |> updateTorpLaunches input          -- launch new torpedoes
     |> updateCamera                         -- update the camera position
 
+updateVesselsControls : Input -> Game -> Game
+updateVesselsControls input game = 
+    let
+    vessels' = Dict.map (updateControls input game) game.vessels
+    in
+    {game| vessels <- vessels' }
 
-updatePlayer : Input -> Game -> Game
-updatePlayer input game =
+
+updateControls : Input -> Game -> Int -> Vessel -> Vessel
+updateControls input game id vessel =
+    case vessel.controls.brain of
+        Player -> updatePlayerControls input game vessel
+        Attacker -> updateAttackerControls input game vessel
+        Runner -> updateRunnerControls input game vessel
+
+
+updatePlayerControls : Input -> Game -> Vessel -> Vessel
+updatePlayerControls input game vessel = 
+    let
+    tarVessel = ensureTarget game vessel vessel.controls.tarID
+    x = input.arrows.x |> toFloat 
+    y = input.arrows.y |> toFloat
+    (torpFire,beamFire,tarID) = case tarVessel of
+        Nothing -> (False,False,Nothing)
+        Just tar -> (input.shift,input.space,Just tar.id)
+    controls = vessel.controls 
+    controls' = {controls| x<- -x , y<-y 
+                , torpFire <- torpFire , beamFire <- beamFire
+                , tarID <- tarID
+                }
+    in
+    {vessel| controls <- controls' }
+
+updateAttackerControls : Input -> Game -> Vessel -> Vessel
+updateAttackerControls input game vessel = 
+    let
+    tarVessel = ensureTarget game vessel vessel.controls.tarID
+    (beamFire,torpFire,x,y,tarID) = 
+        case tarVessel of
+            Nothing -> (False,False,0,0,Nothing)
+            Just tar -> ( True,True
+                        , turnTowards vessel tar,1
+                        , Just tar.id)
+    controls = vessel.controls 
+    controls' = {controls| x<- x , y<-y 
+                , torpFire <- torpFire , beamFire <- beamFire
+                , tarID <- tarID
+                }
+    in
+    {vessel| controls <- controls' }
+
+updateRunnerControls : Input -> Game -> Vessel -> Vessel
+updateRunnerControls input game vessel = 
+    let
+    tarVessel = ensureTarget game vessel vessel.controls.tarID
+    (beamFire,torpFire,x,y,tarID) = 
+        case tarVessel of
+            Nothing -> (False,False,0,1,Nothing)
+            Just tar -> ( True,True
+                        , turnTowards vessel tar,1
+                        , Just tar.id)
+    controls = vessel.controls 
+    controls' = {controls| x<- -x , y<-y 
+                , torpFire <- torpFire , beamFire <- beamFire
+                , tarID <- tarID
+                }
+    in
+    {vessel| controls <- controls' }
+
+ensureTarget : Game -> Vessel -> Maybe Int -> Maybe Vessel
+ensureTarget game vessel target = 
+    case target of 
+        Nothing -> getNearestHostile game vessel
+        Just id -> getVessel game id 
+
+updateVessels : Input -> Game -> Game
+updateVessels input game = 
+    {game| vessels <- Dict.map (updateVessel input game) game.vessels}
+
+updateVessel : Input -> Game -> Int -> Vessel -> Vessel
+updateVessel input game id vessel =
     let
     t = input.tick
-    player = game.player
-    acc = case input.arrows.y of
-            1 -> player.thrust
-            (-1) -> player.retro
-            0 -> 0
-    va = case input.arrows.x of
-            1 -> -player.turn 
-            (-1) -> player.turn 
-            0 -> 0
-    player' = player |> rotObj t va |> accObj t acc |> moveObj t |> dragObj t
+    controls = vessel.controls 
+    acc = if | controls.y > 0 -> vessel.thrust 
+             | controls.y < 0 -> vessel.retro
+             | True -> 0
+    va = controls.x * vessel.turn 
     in
-    { game  | player <- player'
+    vessel |> rotObj t va |> accObj t acc |> moveObj t |> dragObj t 
+           |> updateDef t |> updateOff t  
+
+updateDef : Time.Time -> Vessel -> Vessel
+updateDef t vessel = vessel
+
+updateOff : Time.Time -> Vessel -> Vessel
+updateOff t vessel =
+    {vessel| torpReload <- vessel.torpReload - t |> max 0 
+            , beamReload <- vessel.beamReload - t |> max 0
             }
-
-updatePirate : Input -> Game -> Game
-updatePirate input game =
-    let
-    t = input.tick
-    pirate = game.pirate
-    ang2tar = (faceObj pirate game.player) - pirate.a |> wrapAngle
-    acc = pirate.thrust
-    va = if ang2tar > 0 then pirate.turn else -pirate.turn
-    pirate' = pirate |> rotObj t va |> accObj t acc |> moveObj t |> dragObj t
-    in
-    {game| pirate <- pirate' }
 
 updateBooms : Input -> Game -> Game
 updateBooms input game = 
@@ -327,25 +561,25 @@ updateBooms input game =
     in
     {game| booms <- booms'}
 
+
 updateTorps : Input -> Game -> Game
 updateTorps input game = 
     let 
     t = input.tick
-    player' = game.player |> moveTorps t
-    (playerTorps,playerDmg,playerBooms) = 
-        List.foldl (collideTorp player') ([],0,[]) player'.seekedBy
-    player'' = {player'| seekedBy <- playerTorps}    
-    pirate' = game.pirate |> moveTorps t 
-    (pirateTorps,pirateDmg,pirateBooms) = 
-        List.foldl (collideTorp pirate') ([],0,[]) pirate'.seekedBy
-    pirate'' = {pirate'| seekedBy <- pirateTorps}
-    booms' = List.concat [game.booms , playerBooms , pirateBooms] 
+    vessels' = Dict.map (updateTorpSeekingVessel t) game.vessels  
+    newBooms = Dict.values vessels' |> List.concatMap .newBooms
     in 
-    { game | player <- player'' , pirate <- pirate'' , booms <- booms'}
+    {game| vessels <- vessels' 
+         , booms <- List.concat [newBooms , game.booms]}
 
-moveTorps : Time.Time -> Vessel -> Vessel
-moveTorps t vessel =  
-    {vessel| seekedBy <- List.filterMap (moveTorp t vessel) vessel.seekedBy}
+updateTorpSeekingVessel : Time.Time -> Int -> Vessel -> Vessel
+updateTorpSeekingVessel t id vessel =
+    let
+    seekedBy' = List.filterMap (moveTorp t vessel) vessel.seekedBy
+    (seekedBy'',damage,newBooms') =
+        List.foldl (collideTorp vessel) ([],0,[]) seekedBy' 
+    in 
+    {vessel| seekedBy <- seekedBy'' , newBooms <- newBooms' }
 
 moveTorp : Time.Time -> Vessel -> Torpedo -> Maybe Torpedo
 moveTorp t vessel torp = 
@@ -359,6 +593,7 @@ moveTorp t vessel torp =
     { torp | age <- age' , a <- a'} |> accObj t torpAcc |> moveObj t 
     |> dragObj t |> Just
 
+
 collideTorp : Vessel -> Torpedo -> (List Torpedo , Float , List Boom) 
     -> (List Torpedo , Float , List Boom)
 collideTorp vessel torp ( list , damage , booms ) = 
@@ -366,65 +601,67 @@ collideTorp vessel torp ( list , damage , booms ) =
     then ( list ,  torpDamage + damage , (createBoom torp) :: booms ) 
     else ( torp :: list , damage , booms )
 
+
+
 createBoom : Object a -> Boom
 createBoom obj = 
     { x = obj.x , y = obj.y , a=0 , vx=0 , vy=0
     , r = boomInitRadius , drag = 0 , age=0}
 
-updatePlayerAttack : Input -> Game -> Game
-updatePlayerAttack input game = 
+    
+updateTorpLaunches : Input -> Game -> Game
+updateTorpLaunches input game =
     let
-    t = input.tick
-    player = game.player
-    pirate = game.pirate
-    torpReload' = case player.torpReload of
-        0 -> if input.shift then torpReload else 0
-        x -> max 0 (x-t)
-    seekedBy' = if torpReload' == torpReload |> not then pirate.seekedBy else
-        (torpSpawn player pirate) :: pirate.seekedBy
-    player' = 
-        {player| torpReload <- torpReload' }
-    pirate' =
-        {pirate| seekedBy <- seekedBy' }
+    (shooters, newTorps) = 
+        Dict.values game.vessels 
+        |> List.filterMap (launchTorp game) 
+        |> List.unzip 
+    vessels' = Dict.union (Dict.fromList shooters) game.vessels
+    vessels'' = List.foldl attachTorpedoes vessels' newTorps
     in
-    {game| player <- player' , pirate <- pirate' }
+    {game| vessels <- vessels'' }       
 
-updatePirateAttack : Input -> Game -> Game
-updatePirateAttack input game =
+launchTorp : Game -> Vessel -> Maybe ((Int,Vessel),(Int,Torpedo))
+launchTorp game vessel = 
     let
-    t = input.tick
-    player = game.player
-    pirate = game.pirate
-    torpReload' = case pirate.torpReload of
-        0 -> torpReload 
-        x -> max 0 (x-t)
-    seekedBy' = if torpReload' == torpReload |> not then player.seekedBy else
-        (torpSpawn pirate player ) :: player.seekedBy
-    player' = 
-        {player| seekedBy <- seekedBy' }
-    pirate' =
-        {pirate| torpReload <- torpReload' }
+    reallyLaunchTorpedo vessel target =
+        ( (vessel.id , {vessel| torpReload <- torpReload } )
+        , ( target.id , torpSpawn vessel )
+        )
     in
-    {game| player <- player' , pirate <- pirate' }
+    if vessel.controls.torpFire == False then Nothing else
+    if vessel.torpReload > 0 then Nothing else
+    case maybeGetVessel game vessel.controls.tarID of
+        Nothing -> Nothing
+        Just target -> reallyLaunchTorpedo vessel target |> Just       
 
-
-torpSpawn : Vessel -> Vessel -> Torpedo
-torpSpawn shooter target =
+torpSpawn : Vessel -> Torpedo
+torpSpawn shooter =
     let
-    a = faceObj shooter target
-    a' = shooter.a 
-    vec = getVec a' 
+    vec = getVec shooter.a  
     in
     { x = shooter.x , y = shooter.y 
     , vx = shooter.vx + vec.x * torpSpeed
     , vy = shooter.vy + vec.y * torpSpeed
-    , a = shooter.a , r = torpDetRadius , drag = 0
+    , a = 0 , r = torpDetRadius , drag = 0
     , age = 0}
+
+attachTorpedoes : (Int , Torpedo) 
+                -> Dict.Dict Int Vessel 
+                -> Dict.Dict Int Vessel 
+attachTorpedoes (id , torp) vessels = 
+    case Dict.get id vessels of
+        Nothing -> vessels
+        Just vessel ->
+            let vessel' = {vessel| seekedBy <- torp :: vessel.seekedBy }
+            in Dict.insert id vessel' vessels
 
 updateCamera : Game -> Game
 updateCamera game = 
     let
-    camera' = (.x game.player , .y game.player)
+    camera' = case getVessel game game.playerID of
+                Nothing -> game.camera
+                Just player -> (player.x , player.y)
     in 
     { game | camera <- camera'}
 
@@ -442,13 +679,13 @@ view : (Int,Int) -> Game -> Element.Element
 view (w,h) game =
     Element.container w h Element.middle <|
     Collage.collage gameW gameH
-    [ viewSky
-    , viewStarsImg game
-    --, viewStars game
-    , viewTorpedoes game
-    , viewPirate game
-    , viewPlayer game
-    , viewBooms game 
+    [ viewSky                               -- draw the black bg
+    , viewStarsImg game                     -- draw the starfield
+    , viewTorpedoes game                    -- draw torps
+    --, viewPirate game                       
+    --, viewPlayer game
+    , viewVessels game                      -- draw vessels
+    , viewBooms game                        -- draw explosions
     ]
 
 viewSky : Collage.Form
@@ -458,7 +695,6 @@ viewStarsImg game =
     let
     (cx,cy) = game.camera
     img = "images/test2.png"
-    --d = 100
     d = gameW * 5
     (bx,by) = (cx/d,cy/d)
     tiles = 
@@ -470,37 +706,20 @@ viewStarsImg game =
     drawTile (x,y) = Element.image d d img |> Collage.toForm 
                     |> Collage.move (d*x-cx,d*y-cy)
     in
-    List.map drawTile tiles |> Collage.group
-    {-}
-    [ Element.image d d img |> Collage.toForm |> Collage.move (-cx,-cy)
-    , Element.image d d img |> Collage.toForm |> Collage.move (d/2-cx,d/2-cy)
-    ] |> Collage.group
-    -}
-
-viewStars game = 
-    let
-    (cx,cy) = game.camera
-    star (x,y) = Collage.circle 1 |> Collage.filled Color.white 
-                |> Collage.move (x-cx,y-cy)
-    --onScreen (x,y) = abs (x-cx) < halfW || abs (y-cy) < halfH 
-    --maybeStar xy = if onScreen xy then star xy |> Just else Nothing         
-    in
-    game.stars |>
-    --List.filterMap maybeStar |>
-    List.map star |>
-    Collage.group    
+    List.map drawTile tiles |> Collage.group 
 
 viewTorpedoes game =
     let 
     (cx,cy) = game.camera
-    torpAll = List.concatMap .seekedBy [game.player , game.pirate]
+    torpAll = Dict.values game.vessels |> List.concatMap .seekedBy  
     torpDraw torp =  
         let
-        ageMod = (torp.age * 10 |> floor) % 3
+        ageMod = (torp.age * 10 |> floor) % 4
         (color,radius) 
             = if | ageMod == 0 -> (Color.white , 2 )
                  | ageMod == 1 ->  (Color.lightBlue , 2.5 )
                  | ageMod == 2 ->  (Color.darkBlue , 3 )
+                 | ageMod == 3 ->  (Color.lightBlue , 2.5 )
         in
         Collage.circle radius
         |> Collage.filled color
@@ -509,9 +728,13 @@ viewTorpedoes game =
     torpAll |> List.map torpDraw |> Collage.group
 
 
+viewVessels game =
+    Dict.values game.vessels 
+    |> List.map (viewVessel game)
+    |> Collage.group
+
 viewVessel game vessel = 
     let
-    player = game.player
     (cx,cy) = game.camera
     x = vessel.x - cx
     y = vessel.y - cy
@@ -524,6 +747,7 @@ viewVessel game vessel =
 viewPlayer game = viewVessel game game.player 
 
 viewPirate game = viewVessel game game.pirate
+
 
 
 viewBooms game = 
