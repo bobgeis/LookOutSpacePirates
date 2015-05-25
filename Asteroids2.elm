@@ -102,7 +102,7 @@ allInputs = Signal.sampleOn tick <|
                    ~ Keyboard.space
                    ~ Keyboard.shift
                    ~ Keyboard.ctrl
-                   ~ Time.every (Time.second * 10)
+                   ~ Time.every (Time.second * 3)
 
 tick : Signal Time.Time
 tick = Time.inSeconds <~ Time.fps 35
@@ -112,12 +112,12 @@ tick = Time.inSeconds <~ Time.fps 35
 -- MODEL
 
 type alias Input = 
-    { tick : Time.Time 
-    , arrows : {x:Int,y:Int}
-    , space : Bool
-    , shift : Bool
-    , ctrl : Bool
-    , time : Time.Time
+    { tick : Time.Time              -- time since the last tick
+    , arrows : {x:Int,y:Int}        -- arrow keys 
+    , space : Bool                  -- T/F space is pressed
+    , shift : Bool                  -- T/F shift is pressed
+    , ctrl : Bool                   -- T/F control is pressed
+    , time : Time.Time              -- time in seconds, updated every 10s
     }
 
 -- constants / magic numbers
@@ -141,18 +141,18 @@ pirateDict =
     [ (playerFact , True)
     , (pirateFact , False)
     , (merchantFact , True)
-    ] |> makeDict
+    ] |> Dict.fromList
 merchantDict = 
     [ (playerFact , False)
     , (pirateFact , True)
     , (merchantFact , False)
-    ] |> makeDict
+    ] |> Dict.fromList
 
 hostilityDict =
     [ (playerFact , playerDict)
     , (pirateFact , pirateDict)
     , (merchantFact , merchantDict)
-    ] |> makeDict
+    ] |> Dict.fromList
 
 
 
@@ -163,6 +163,7 @@ type alias Game =
     , booms : List Boom             -- explosions
     , nextID : Int
     , vessels : Dict.Dict Int Vessel -- Dict containing all the vessels
+    , time : Time.Time              -- so we know when the timer is up
     }
 
 startGame : Game
@@ -172,6 +173,7 @@ startGame =
     , booms = []
     , nextID = 4
     , vessels = startingVessels
+    , time = 0
     }
 
 type alias Object a =                -- a space object
@@ -260,7 +262,7 @@ startingVessels =
     [ (1 , initPlayer)
     , (2 , newPirate (-100,-100) 2)
     , (3 , newTransport (100,100) 3)
-    ] |> makeDict
+    ] |> Dict.fromList
 
 -- how has the vessel set its controls?
 type alias ControlState =
@@ -270,36 +272,23 @@ type alias ControlState =
     , beamFire:Bool             -- attempting to fire beams
     , tarID:Maybe Int           -- id of target
     --, allyID:Maybe Int        -- id of an ally?
-    , behavior:Behavior         -- behavior
     , brain:Brain               -- brain
     }
 
 initControls : ControlState
 initControls = 
-    {x=0 , y=0              -- turn left/right and thrust/retro
-    , torpFire=False , beamFire=False
+    { x=0 , y=0              -- turn left/right and thrust/retro
+    , torpFire=False 
+    , beamFire=False
     , tarID=Nothing 
-    --, tar=Nothing
-    , behavior=AllAhead 
     , brain=Attacker
     }    
 
--- vessel behaviors: what is it trying to do doing right now?
-type Behavior = PlayerControl
-              | Chill 
-              | AllAhead
-              | Attack 
-              | Flee 
-              | Follow 
-              | GoTo (Float,Float)
 
 -- determines how a vessel chooses behaviors
 type Brain = Player 
            | Attacker 
            | Runner 
-
-
-
 
 
 
@@ -332,23 +321,34 @@ type alias Beam =
     }
 
 
+
+
+
+
+
+
+
 -- UPDATE
 
 -- useful functions:
 
-makeDict : List (comparable,v) -> Dict.Dict comparable v
-makeDict list =
-    let
-    foldD (k,v) dict =
-        Dict.insert k v dict
-    in
-    List.foldl foldD Dict.empty list
+-- get me a probility stat
+quickProb : Float -> Float 
+quickProb float = 
+    floor float |> Random.initialSeed |>
+    Random.generate (Random.float 0 1) |> fst      
+
+-- like quickProb but bt -1 and 1
+quickRange : Float -> Float
+quickRange float = 
+    floor float |> Random.initialSeed |>
+    Random.generate (Random.float -1 1) |> fst    
 
 -- given an id, get the vessel out of the game's dict, MAYBE
 getVessel : Game -> Int -> Maybe Vessel
 getVessel game id = Dict.get id game.vessels 
 
--- given a maybe id, get the vessel out of the game's dict
+-- given a maybe id, maybe get a vessel out of the game's dict
 maybeGetVessel : Game -> Maybe Int -> Maybe Vessel
 maybeGetVessel game maybeID = 
     case maybeID of
@@ -443,12 +443,13 @@ getAng {x,y} = atan2 y x
 updateGame : Input -> Game -> Game
 updateGame input game =
     game
-    |> updateVesselsControls input           -- update control states
+    |> updateVesselsControls input          -- update control states
     |> updateVessels input                  -- update the vessels
     |> updateBooms input                    -- update explosions
     |> updateTorps input                    -- update the torpedoes
-    |> updateTorpLaunches input          -- launch new torpedoes
+    |> updateTorpLaunches input             -- launch new torpedoes
     |> updateCamera                         -- update the camera position
+    |> timerSpawns input                    -- maybe spawn stuff
 
 updateVesselsControls : Input -> Game -> Game
 updateVesselsControls input game = 
@@ -663,7 +664,57 @@ updateCamera game =
                 Nothing -> game.camera
                 Just player -> (player.x , player.y)
     in 
-    { game | camera <- camera'}
+    {game| camera <- camera'}
+
+
+timerSpawns : Input -> Game -> Game
+timerSpawns input game = 
+    if game.time == input.time then game else
+    let 
+    (nextID',newVessels) = maybeSpawnTransport game game.nextID []  
+    (nextID'',newVessels') = maybeSpawnPirate game nextID' newVessels 
+    in 
+    {game| time <- input.time 
+        , nextID <- nextID''
+        , vessels <- Dict.fromList newVessels' |> Dict.union game.vessels}
+
+maybeSpawnTransport : Game -> Int -> List (Int,Vessel) 
+            -> (Int,List (Int,Vessel))
+maybeSpawnTransport game nextID newVessels = 
+    let
+    prob = quickProb (game.time * 7)
+    in
+    if prob > 0.7
+    then (nextID,newVessels)
+    else let 
+    nextID' = nextID+1
+    newVessel = newTransport
+                ( quickRange (game.time * 5)
+                , quickRange (game.time * 3)
+                ) 
+                nextID'
+    in
+    (nextID',(nextID',newVessel)::newVessels)            
+
+maybeSpawnPirate : Game -> Int -> List (Int,Vessel) 
+            -> (Int,List (Int,Vessel))
+maybeSpawnPirate game nextID newVessels = 
+    let
+    prob = quickProb (game.time * 17)
+    in
+    if prob > 0.7
+    then (nextID,newVessels)
+    else let 
+    nextID' = nextID+1
+    newVessel = newPirate 
+                ( quickRange (game.time * 5)
+                , quickRange (game.time * 3)
+                ) 
+                nextID'
+    in
+    (nextID',(nextID',newVessel)::newVessels)  
+
+
 
 
 
