@@ -184,6 +184,25 @@ type alias Object a =                -- a space object
         , drag:Float                 -- drag (ratio lost /sec)
         }
 
+{--}
+-- we are currently using big records instead of components
+-- but here are some components in case we want to switch
+type alias Drive =
+    { thrust:Float
+    , retro:Float
+    , turn:Float
+    }
+type alias Weapons =
+    { torpReload:Float
+    , beamReload:Float
+    }    
+type alias Defenses =
+    { shields:Float
+    , shieldMax:Float
+    }    
+--}
+
+
 type alias HasDrive a =
     { a | thrust:Float              -- thrust is forward acceleration (px/s/s)
         , retro:Float               -- retro is reverse acc (px/sec/sec)
@@ -202,6 +221,7 @@ type alias HasDefense a =
         --, blinks:Float 
         --, blinkMax:Float 
         }    
+shieldRegen = 2                     -- shield regained (pts/sec)
 
 -- space vessels
 type alias Vessel = Object 
@@ -211,6 +231,7 @@ type alias Vessel = Object
         , faction:Int
         , controls:ControlState
         , newBooms:List Boom
+        , state:VesselState
     }))))                
 
 initPlayer : Vessel
@@ -224,6 +245,7 @@ initPlayer =
     , faction=playerFact
     , controls = {initControls| brain <- Player}
     , newBooms = []
+    , state = VesselActive
     }
 
 initPirate : Vessel
@@ -241,6 +263,7 @@ newPirate (x,y) id =
     , faction=pirateFact
     , controls = {initControls| brain <- Attacker}
     , newBooms = []
+    , state = VesselActive
     }
 
 
@@ -255,6 +278,7 @@ newTransport (x,y) id =
     , faction=merchantFact
     , controls = {initControls| brain <- Runner}
     , newBooms = []
+    , state = VesselActive
     }    
 
 startingVessels : Dict.Dict Int Vessel
@@ -284,6 +308,10 @@ initControls =
     , brain=Attacker
     }    
 
+-- the state of the vessel
+type VesselState = VesselActive
+                 | VesselInactive
+                 | VesselDead 
 
 -- determines how a vessel chooses behaviors
 type Brain = Player 
@@ -449,6 +477,7 @@ updateGame input game =
     |> updateTorps input                    -- update the torpedoes
     |> updateTorpLaunches input             -- launch new torpedoes
     |> updateCamera                         -- update the camera position
+    |> cullVessels                          -- remove dead vessels
     |> timerSpawns input                    -- maybe spawn stuff
 
 updateVesselsControls : Input -> Game -> Game
@@ -526,6 +555,8 @@ ensureTarget game vessel target =
         Nothing -> getNearestHostile game vessel
         Just id -> getVessel game id 
 
+
+
 updateVessels : Input -> Game -> Game
 updateVessels input game = 
     {game| vessels <- Dict.map (updateVessel input game) game.vessels}
@@ -544,13 +575,19 @@ updateVessel input game id vessel =
            |> updateDef t |> updateOff t  
 
 updateDef : Time.Time -> Vessel -> Vessel
-updateDef t vessel = vessel
+updateDef t vessel = 
+    let
+    state' = if vessel.shields < 0 then VesselDead else VesselActive
+    shields' = vessel.shields + t * shieldRegen |> min vessel.shieldMax
+    in
+    {vessel| state <- state' , shields <- shields' }
 
 updateOff : Time.Time -> Vessel -> Vessel
 updateOff t vessel =
     {vessel| torpReload <- vessel.torpReload - t |> max 0 
             , beamReload <- vessel.beamReload - t |> max 0
             }
+
 
 updateBooms : Input -> Game -> Game
 updateBooms input game = 
@@ -561,6 +598,8 @@ updateBooms input game =
         {boom| age <- boom.age+t , r <- boom.r + t*boomGrowthRate} |> Just
     in
     {game| booms <- booms'}
+
+
 
 
 updateTorps : Input -> Game -> Game
@@ -580,7 +619,8 @@ updateTorpSeekingVessel t id vessel =
     (seekedBy'',damage,newBooms') =
         List.foldl (collideTorp vessel) ([],0,[]) seekedBy' 
     in 
-    {vessel| seekedBy <- seekedBy'' , newBooms <- newBooms' }
+    {vessel| seekedBy <- seekedBy'' , newBooms <- newBooms' 
+           , shields <- vessel.shields - damage }
 
 moveTorp : Time.Time -> Vessel -> Torpedo -> Maybe Torpedo
 moveTorp t vessel torp = 
@@ -602,14 +642,14 @@ collideTorp vessel torp ( list , damage , booms ) =
     then ( list ,  torpDamage + damage , (createBoom torp) :: booms ) 
     else ( torp :: list , damage , booms )
 
-
-
 createBoom : Object a -> Boom
 createBoom obj = 
     { x = obj.x , y = obj.y , a=0 , vx=0 , vy=0
     , r = boomInitRadius , drag = 0 , age=0}
 
     
+
+
 updateTorpLaunches : Input -> Game -> Game
 updateTorpLaunches input game =
     let
@@ -657,6 +697,9 @@ attachTorpedoes (id , torp) vessels =
             let vessel' = {vessel| seekedBy <- torp :: vessel.seekedBy }
             in Dict.insert id vessel' vessels
 
+
+
+
 updateCamera : Game -> Game
 updateCamera game = 
     let
@@ -665,6 +708,19 @@ updateCamera game =
                 Just player -> (player.x , player.y)
     in 
     {game| camera <- camera'}
+
+
+
+cullVessels : Game -> Game
+cullVessels game =
+    let
+    f id vessel = vessel.state == VesselActive 
+    (vessels',culled) = Dict.partition f game.vessels
+    booms' = Dict.values culled |> List.map createBoom 
+             |> List.append game.booms
+    in 
+    {game| vessels <- vessels' , booms <- booms' }
+
 
 
 timerSpawns : Input -> Game -> Game
@@ -733,8 +789,6 @@ view (w,h) game =
     [ viewSky                               -- draw the black bg
     , viewStarsImg game                     -- draw the starfield
     , viewTorpedoes game                    -- draw torps
-    --, viewPirate game                       
-    --, viewPlayer game
     , viewVessels game                      -- draw vessels
     , viewBooms game                        -- draw explosions
     ]
@@ -794,10 +848,6 @@ viewVessel game vessel =
     Element.image d d vessel.image |> Collage.toForm
     |> Collage.rotate (vessel.a - degrees 90)
     |> Collage.move (x,y) 
-
-viewPlayer game = viewVessel game game.player 
-
-viewPirate game = viewVessel game game.pirate
 
 
 
