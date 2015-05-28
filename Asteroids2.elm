@@ -13,13 +13,12 @@ This particular mini game is exploring how combat might work.
 The ultimate goal would be to make a more complicated 2D space trader game
 playable in the browser.  We'll see how far we get before losing steam.  
 
-nice milky way pic:
-    http://apod.nasa.gov/apod/image/0510/allskymilkyway_brunier_big.jpg
-    ^this is an Astronomy pic of the day, so usable!
 
-and:
-    http://www.sidleach.com/summer_milky_way.jpg
-    ^this was taken by Sid Leach in 2004, unsure of C
+planet pic
+    http://commons.wikimedia.org/wiki/File:3D_Neptune.png
+    Licensed under Creative Commons Attribution-Share Alike 4.0 International
+    by user Jcpag2012
+
 
 -}
 
@@ -48,7 +47,7 @@ time has elapsed since the last tick!  This means that it will tick
 immediately on return with a very large tick time, so things like moveObj
 will have huge time arguments.  So a pirate that was orbiting the player
 in a somewhat stable fashion will have flown way way off the screen (because
-only linear ballistic motion is simulated)!
+only linear ballistic motion is modeled)!
 
 4) There are a lot of useful functions in List and Dict.  
 Fold is still the king, but the others are useful when you know what you want.
@@ -74,6 +73,7 @@ import Text
 import Time
 import Window
 import Keyboard
+import Char
 import Mouse
 import List
 import Dict
@@ -115,6 +115,7 @@ allInputs = Signal.sampleOn tick <|
                    ~ Keyboard.shift
                    ~ Keyboard.ctrl
                    ~ Time.every (Time.second * 3)
+                   ~ Keyboard.isDown (Char.toCode 'R')
 
 tick : Signal Time.Time
 tick = Time.inSeconds <~ Time.fps 35
@@ -130,6 +131,7 @@ type alias Input =
     , shift : Bool                  -- T/F shift is pressed
     , ctrl : Bool                   -- T/F control is pressed
     , time : Time.Time              -- time in seconds, updated every 10s
+    , rKey : Bool
     }
 
 -- constants / magic numbers
@@ -590,7 +592,9 @@ updateControls input game id vessel =
 updatePlayerControls : Input -> Game -> Vessel -> Vessel
 updatePlayerControls input game vessel = 
     let
-    tarVessel = ensureTarget game vessel vessel.controls.tarID
+    tarVessel = 
+        if input.rKey == True then getNearestHostile game vessel else
+        ensureTarget game vessel vessel.controls.tarID
     x = input.arrows.x |> toFloat 
     y = input.arrows.y |> toFloat
     (torpFire,beamFire,tarID) = case tarVessel of
@@ -928,6 +932,7 @@ view (w,h) game =
     Collage.collage gameW gameH
     [ viewSky                               -- draw the black bg
     , viewStarsImg game                     -- draw the starfield
+    , viewPlanet game                       -- draw the planet
     , viewTorpedoes game                    -- draw torps
     , viewVessels game                      -- draw vessels
     , viewFlashes game                      -- draw FTL flashes
@@ -955,6 +960,14 @@ viewStarsImg game =
                     |> Collage.move (d*x-cx,d*y-cy)
     in
     List.map drawTile tiles |> Collage.group 
+
+viewPlanet game = 
+    let
+    (cx,cy) = game.camera
+    img = "images/3D_Neptune2.png"
+    d = 100
+    in
+    Element.image d d img |> Collage.toForm |> Collage.move (-cx,-cy)
 
 viewTorpedoes game =
     let 
@@ -1045,8 +1058,8 @@ viewPanes game =
     Nothing -> Element.empty |> Collage.toForm 
     Just player -> 
     let
-    pxy = (50-halfW,halfH-10)
-    txy = (50-halfW,10-halfH)
+    pxy = (80-halfW,halfH-10)
+    txy = (80-halfW,10-halfH)
     playerPane = drawVesselPane player pxy
     targetPane =
         case maybeGetVessel game player.controls.tarID of
@@ -1058,8 +1071,8 @@ viewPanes game =
 
 drawVesselPane vessel xy =
     [ Element.image 20 20 vessel.image
-    , drawText ("Shields: " ++ toString (floor vessel.def.shields))
-    , drawText ("Blinks: " ++ toString (floor vessel.def.blinks))
+    , drawText (" Shields: " ++ toString (floor vessel.def.shields))
+    , drawText (" Blinks: " ++ toString (floor vessel.def.blinks))
     ] 
     |> Element.flow Element.right 
     |> Element.color Color.darkBlue 
