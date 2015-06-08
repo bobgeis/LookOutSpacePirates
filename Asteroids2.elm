@@ -7,6 +7,7 @@ Player Controls:
 
     arrow keys: turn left & right and accelerate forward & backward.
     shift key: launch torpedoes at the current hostile target.
+    R key: target the nearest hostile
 
 This is a small game modeled after LOOK OUT! SPACE ROCKS! (asteroids).
 This particular mini game is exploring how combat might work.
@@ -114,7 +115,7 @@ allInputs = Signal.sampleOn tick <|
                    ~ Keyboard.space
                    ~ Keyboard.shift
                    ~ Keyboard.ctrl
-                   ~ Time.every (Time.second * 3)
+                   ~ Time.every (Time.second * 10)
                    ~ Keyboard.isDown (Char.toCode 'R')
 
 tick : Signal Time.Time
@@ -174,22 +175,27 @@ hostilityDict =
 type alias Game = 
     { playerID : Int                -- the ID of the player's vessel
     , camera : (Float,Float)        -- The coordinates of the camera
-    , booms : List Boom             -- explosions
-    , flashes : List Flash          -- FTL flashes
     , nextID : Int                  -- the ID for the next vessel to spawn
     , vessels : Dict.Dict Int Vessel -- Dict containing all the vessels
     , time : Time.Time              -- so we know when the timer is up
+    , ephemera : Children
+    , booms : List Boom             -- explosions
+    , flashes : List Flash          -- FTL flashes
+    , beams : List Beam             -- the beam effects
     }
+
 
 startGame : Game
 startGame =
     { playerID = 1
     , camera = (0,0)
-    , booms = []
-    , flashes = []
     , nextID = 4
     , vessels = startingVessels
     , time = 0
+    , ephemera = initChildren 
+    , booms = []
+    , flashes = []
+    , beams = []
     }
 
 
@@ -201,122 +207,49 @@ type alias Object a =                -- a space object
         , r:Float                    -- radius(px)
         , drag:Float                 -- drag (ratio lost /sec)
         }
-
-{--}
--- we are currently using big records instead of components
--- but here are some components in case we want to switch
-type alias Drive =
-    { thrust:Float
-    , retro:Float
-    , turn:Float
-    }
-type alias Offenses =
-    { torpReload:Float
-    , beamReload:Float
-    }    
-type alias Defenses =
-    { shields:Float
-    , shieldMax:Float
-    , shieldRegen:Float
-    , blinks:Float
-    , blinkMax:Float
-    , blinkRegen:Float
-    }    
-
-
-playerDefenses : Defenses
-playerDefenses =
-    { shields = 100 
-    , shieldMax = 100
-    , shieldRegen = 10
-    , blinks = 3
-    , blinkMax = 3
-    , blinkRegen = 0.2
-    }
-
-pirateDefenses : Defenses
-pirateDefenses =
-    { shields = 40 
-    , shieldMax = 40
-    , shieldRegen = 2
-    , blinks = 1
-    , blinkMax = 1
-    , blinkRegen = 0.05
-    }
-
-transportDefenses : Defenses
-transportDefenses =
-    { shields = 75 
-    , shieldMax = 75
-    , shieldRegen = 2
-    , blinks = 1
-    , blinkMax = 1
-    , blinkRegen = 0.05
-    }
-
---}
-
-
-type alias HasDrive a =
-    { a | thrust:Float              -- thrust is forward acceleration (px/s/s)
-        , retro:Float               -- retro is reverse acc (px/sec/sec)
-        , turn:Float                -- turn is turn rate (deg/sec)
-        }
-
-type alias HasOffense a =
-    { a | torpReload:Float          -- time until can launch torps again (sec)
-        , beamReload:Float          -- time until can fire beams again (sec)
-        }
-{-}
-type alias HasDefense a =
-    { a | shields:Float 
-        , shieldMax:Float
-        --, seekedBy:List Torpedo
-        --, blinks:Float 
-        --, blinkMax:Float 
-        }    
-shieldRegen = 2                     -- shield regained (pts/sec)
---}
-
--- children are effects that a vessel can spawn
-type alias Children = 
-    { booms:List Boom
-    , flashes:List Boom
-    }
-
-initChildren : Children
-initChildren = 
-    { booms = [] , flashes = [] }    
+  
 
 -- space vessels
-type alias Vessel = Object 
-    (HasOffense 
-        --(HasDefense 
-        (HasDrive                  
-    ({ image:String                          -- image name string
-        , id:Int
-        , state:VesselState
-        , faction:Int
-        , controls:ControlState
-        , children:Children
-        , def:Defenses
-        , seekedBy:List Torpedo
-    })))                
+type alias Vessel = Object      
+    { image:String                   --        
+    , id:Int                         -- identifier in the Dict Vessel
+    , thrust:Float                   -- 
+    , retro:Float
+    , turn:Float
+    , state:VesselState
+    , faction:Int
+    , controls:ControlState
+    , seekedBy:List Torpedo
+    , children:Children
+    , beam:BeamWpn
+    , torp:TorpWpn
+    , shields:Shields
+    , blinks:Blinks
+    , flares:Flares
+    , drive:Drive
+    }             
+
 
 initPlayer : Vessel
 initPlayer =
-    { x=0,y=0,a=degrees 90, vx=100, vy=100
+    { x=0,y=0,a=pi, vx=100, vy=100
     , r=10, drag=0.3 
-    , thrust=100, retro=-50, turn= degrees 100
-    , torpReload=0 , beamReload=0
-    --, shields=100 , shieldMax=100 
-    , seekedBy=[]
-    , image="images/player2.png" , id=1
+    , image="images/player2.png" 
+    , id=1
+    , thrust=100
+    , retro=-50
+    , turn= degrees 100
     , faction=playerFact
     , controls = {initControls| brain <- Player}
     , state = VesselActive
+    , seekedBy=[]
     , children = initChildren
-    , def = playerDefenses
+    , beam = playerBmWpn
+    , torp = playerTpWpn
+    , shields = playerShields
+    , blinks = playerBlinks
+    , flares = playerFlares
+    , drive = playerDrive
     }
 
 
@@ -329,15 +262,18 @@ newPirate (x,y) id =
     { x=x,y=y,a=0, vx=0, vy=0
     , r=8, drag=0.3
     , thrust=90, retro=-50, turn= degrees 100
-    , torpReload=0 , beamReload=0
-    --, shields=35 , shieldMax=35 
     , seekedBy=[]
     , image="images/pirate1.png" , id=id
     , faction=pirateFact
     , controls = {initControls| brain <- Attacker}
     , state = VesselActive
     , children = initChildren
-    , def = pirateDefenses
+    , beam = noBmWpn
+    , torp = pirateTpWpn
+    , shields = pirateShields
+    , blinks = pirateBlinks
+    , flares = noFlares
+    , drive = pirateDrive
     }
 
 
@@ -347,15 +283,18 @@ newTransport (x,y) id =
     { x=x,y=y,a=0, vx=0, vy=0
     , r=8, drag=0.3
     , thrust=60, retro=-30, turn= degrees 80
-    , torpReload=0 , beamReload=0
-    --, shields=75 , shieldMax=75 
     , seekedBy=[]
     , image="images/civ1.png" , id=id
     , faction=merchantFact
     , controls = {initControls| brain <- Runner}
     , state = VesselActive
     , children = initChildren
-    , def = transportDefenses
+    , beam = transportBmWpn
+    , torp = noTpWpn
+    , shields = transportShields
+    , blinks = transportBlinks
+    , flares = transportFlares
+    , drive = transportDrive
     }    
 
 
@@ -366,12 +305,45 @@ startingVessels =
     , (3 , newTransport (100,100) 3)
     ] |> Dict.fromList
 
+-- a component represent a vessel's propulsion. a motor, engine, or propulsor
+type alias Drive =
+    {thrust:Float
+    ,retro:Float
+    ,turn:Float
+    }
+
+playerDrive : Drive 
+playerDrive =
+    { thrust = 100 , retro = -50 , turn = degrees 100 }
+
+pirateDrive : Drive 
+pirateDrive =
+    { thrust = 80 , retro = -50 , turn = degrees 90 }
+
+transportDrive : Drive 
+transportDrive =
+    { thrust = 60 , retro = -30 , turn = degrees 80 }
+
+
+-- children are effects that a vessel can spawn
+type alias Children = 
+    { booms:List Boom
+    , flashes:List Boom
+    , beams:List Beam
+    }
+
+initChildren : Children
+initChildren = 
+    { booms = [] , flashes = [] , beams = [] }  
+
+
+
 -- how has the vessel set its controls?
 type alias ControlState =
     { x:Float                   -- turn left (+1) or right (-1)
     , y:Float                   -- thrust forward (+1) or retro (-1)
-    , torpFire:Bool             -- attempting to fire torpedoes
-    , beamFire:Bool             -- attempting to fire beams
+    , fireT:Bool                -- attempting to fire torpedoes
+    , fireB:Bool                -- attempting to fire beams
     , tarID:Maybe Int           -- id of target
     --, allyID:Maybe Int        -- id of an ally?
     , brain:Brain               -- brain
@@ -380,8 +352,8 @@ type alias ControlState =
 initControls : ControlState
 initControls = 
     { x=0 , y=0              -- turn left/right and thrust/retro
-    , torpFire=False 
-    , beamFire=False
+    , fireT=False 
+    , fireB=False
     , tarID=Nothing 
     , brain=Attacker
     }    
@@ -399,15 +371,208 @@ type Brain = Player
 
 
 
+-- this is some quantity that has a current and maxiumum and regenerates
+-- at some rate.  for example: shields, blinks, beam and torpedo energy.
+type alias Regenerator a = 
+    {a| cur:Float                   -- current amount of energy
+    , max:Float                     -- maximum amount of energy
+    , reg:Float                     -- regeneration rate (nrg/sec)
+    }
+
+stepReg : Time.Time -> Regenerator a -> Regenerator a
+stepReg t reg = {reg| cur <- reg.cur + reg.reg*t |> min reg.max }    
+
+type alias Shields =
+    Regenerator 
+    { def:Float                     -- deflection: amt of dmg ignored/hit
+    }
+
+playerShields : Shields 
+playerShields =
+    { def = 5 } 
+    |> Regenerator 150 150 5
+
+pirateShields : Shields
+pirateShields =
+    { def = 2 } 
+    |> Regenerator 60 60 2
+
+transportShields : Shields
+transportShields = 
+    { def = 3 } 
+    |> Regenerator 70 70 2
+
+stepShields : Time.Time -> Vessel -> Vessel
+stepShields t vessel =
+    {vessel| shields <- vessel.shields |> stepReg t }
+
+applyDmg : Float -> Vessel -> Vessel
+applyDmg dmg vessel = 
+    let 
+    shields = vessel.shields
+    harm = dmg - shields.def |> max 0 
+    shields' = {shields| cur <- shields.cur - harm }
+    in
+    {vessel| shields <- shields' }
+
+-- this is something that activates w a cost. it may have a delay 
+-- bt successive activations in addition to the cost.
+type alias Activator a = 
+    {a| del:Float               -- delay in sec bt activations
+    , rel:Float                 -- the time to reload the next activation
+    , cost:Float                -- cost in nrg / activation
+    }
+
+stepAct : Time.Time -> Activator a -> Activator a
+stepAct t act = {act| rel <- act.rel - t |> max 0 }
+
+type alias ActReg a =
+    Regenerator (Activator a)    
+
+stepActReg : Time.Time -> ActReg a -> ActReg a
+stepActReg t ar = stepReg t ar |> stepAct t  
+
+canActivate : ActReg a -> Bool
+canActivate ar =
+    if | ar.rel > 0 -> False  
+       | ar.cost > ar.cur -> False
+       | otherwise -> True 
+
+activate : ActReg a -> ActReg a
+activate ar =
+    {ar| rel <- ar.del , cur <- ar.cur - ar.cost }    
+
+type alias Blinks =
+    ActReg {dist:Float}
+
+playerBlinks : Blinks
+playerBlinks =
+    {dist=40} 
+    |> Regenerator 2 2 0.5
+    |> Activator 1 1 1
+
+pirateBlinks : Blinks
+pirateBlinks =
+    {dist=40} 
+    |> Regenerator 1 1 0.15
+    |> Activator 1 1 1
+
+transportBlinks : Blinks
+transportBlinks = 
+    {dist=40}
+    |> Regenerator 1 1 0.1
+    |> Activator 1 1 1
+
+stepBlinks : Time.Time -> Vessel -> Vessel
+stepBlinks t vessel = 
+    {vessel| blinks <- vessel.blinks |> stepActReg t }
+
+applyBlink : Vessel -> Vessel 
+applyBlink vessel = 
+    let
+    vec = quickRange (vessel.x * vessel.y * vessel.a) 
+          |> (*) pi |> getVec 
+    (x',y') = ( vessel.x + vec.x * vessel.blinks.dist
+              , vessel.y + vec.y * vessel.blinks.dist )
+    (flash1,flash2) = ( createFlash (vessel.x , vessel.y) vessel.r
+                      , createFlash (x',y') vessel.r )
+    children = vessel.children
+    children' = {children| flashes <- flash1 :: flash2 :: children.flashes}
+    in
+    {vessel| x<-x', y<-y', blinks <- vessel.blinks |> activate
+            , children <- children' }
+
+type alias Flares =
+    ActReg {number:Int}
+
+playerFlares : Flares
+playerFlares = 
+    {number=1}
+    |> Regenerator 2 2 0.5
+    |> Activator 1 1 1
+
+noFlares : Flares
+noFlares =
+    {number=0}
+    |> Regenerator -1 -1 0
+    |> Activator 1 1 1
+
+transportFlares : Flares
+transportFlares = 
+    {number=1}
+    |> Regenerator 2 2 0.5
+    |> Activator 1 1 1
+
+
+type alias TorpWpn =
+    ActReg { dmg:Float              -- how much damage the torpedo does
+           , life:Float             -- how long the torpedo lasts (sec)
+           , vel:Float              -- the torpedo's muzzle speed
+           , acc:Float              -- the torpedo's acceleration
+           }
+
+noTpWpn : TorpWpn
+noTpWpn =
+    {dmg=0,life=0,vel=0,acc=0}
+    |> Regenerator 0 0 0
+    |> Activator 1 1 1
+
+playerTpWpn : TorpWpn               
+playerTpWpn = 
+    { dmg = 30 , life = 1.0 , vel = 100 , acc = 800 }
+    |> Regenerator 5 5 1
+    |> Activator 0.3 0.3 1
+
+pirateTpWpn : TorpWpn
+pirateTpWpn =
+    { dmg = 30 , life = 0.8 , vel = 100 , acc = 800 }
+    |> Regenerator 1 1 1
+    |> Activator 1 1 1
+
+stepTorpWpn : Time.Time -> Vessel -> Vessel
+stepTorpWpn t vessel = 
+    {vessel| torp <- vessel.torp |> stepActReg t }
+
+type alias BeamWpn =
+    ActReg { dmg:Float      -- how much damage it does
+           , arc:Float      -- max angle to fire (radians)
+           , range:Float    -- max distance to fire
+           }
+
+-- what you give a vessel that can't shoot beams
+-- or should all vessels have Maybe BeamWpn instead?
+noBmWpn : BeamWpn
+noBmWpn =
+    {dmg=0,arc=0,range=0}
+    |> Regenerator 0 0 0    -- this should prevent it from ever firing
+    |> Activator 1 1 1
+
+playerBmWpn : BeamWpn
+playerBmWpn =
+    {dmg = 10 , arc= pi/2 , range = 200}
+    |> Regenerator 5 5 1
+    |> Activator 0.3 0.3 1
+
+transportBmWpn : BeamWpn
+transportBmWpn = 
+    {dmg = 10 , arc = pi , range = 150}
+    |> Regenerator 10 10 1
+    |> Activator 1.5 1.5 3    
+
+stepBeamWpn : Time.Time -> Vessel -> Vessel
+stepBeamWpn t vessel = 
+    {vessel| beam <- vessel.beam |> stepActReg t }
+
+
 -- a homing missile
 type alias Torpedo = Object
     { age:Float
     }
 
-torpMaxAge = 1.0
+torpMaxAge = 0.9
 torpSpeed = 200
-torpAcc = 1000
-torpDrag = 0.1
+torpAcc = 500
+torpDrag = 0.9
 torpReload = 1
 torpDamage = 30
 torpDetRadius = 12
@@ -419,7 +584,7 @@ type alias Beam =
     , age : Float 
     }
 
-
+beamMaxAge = 0.10              -- how long a beam effect is visible
 
 -- an explosion
 type alias Boom = Object
@@ -565,10 +730,11 @@ updateGame input game =
     game
     |> updateVesselsControls input          -- update control states
     |> updateVessels input                  -- update the vessels
-    |> updateBooms input                    -- update explosions
-    |> updateFlashes input                    -- update FTL flashes
+    |> updateEphemera input                 -- update old ephemera
     |> updateTorps input                    -- update the torpedoes
-    |> updateTorpLaunches input             -- launch new torpedoes
+    |> fireTorps input                      -- launch new torpedoes
+    |> fireBeams input                      -- fire new beams
+    |> collectEphemera                      -- collect new ephemera 
     |> updateCamera                         -- update the camera position
     |> cullVessels                          -- remove dead vessels
     |> timerSpawns input                    -- maybe spawn stuff
@@ -597,12 +763,12 @@ updatePlayerControls input game vessel =
         ensureTarget game vessel vessel.controls.tarID
     x = input.arrows.x |> toFloat 
     y = input.arrows.y |> toFloat
-    (torpFire,beamFire,tarID) = case tarVessel of
+    (fireT,fireB,tarID) = case tarVessel of
         Nothing -> (False,False,Nothing)
         Just tar -> (input.shift,input.space,Just tar.id)
     controls = vessel.controls 
     controls' = {controls| x<- -x , y<-y 
-                , torpFire <- torpFire , beamFire <- beamFire
+                , fireT <- fireT , fireB <- fireB
                 , tarID <- tarID
                 }
     in
@@ -612,7 +778,7 @@ updateAttackerControls : Input -> Game -> Vessel -> Vessel
 updateAttackerControls input game vessel = 
     let
     tarVessel = ensureTarget game vessel vessel.controls.tarID
-    (beamFire,torpFire,x,y,tarID) = 
+    (fireT,fireB,x,y,tarID) = 
         case tarVessel of
             Nothing -> (False,False,0,0,Nothing)
             Just tar -> ( True,True
@@ -620,7 +786,7 @@ updateAttackerControls input game vessel =
                         , Just tar.id)
     controls = vessel.controls 
     controls' = {controls| x<- x , y<-y 
-                , torpFire <- torpFire , beamFire <- beamFire
+                , fireT <- fireT , fireB <- fireB
                 , tarID <- tarID
                 }
     in
@@ -630,7 +796,7 @@ updateRunnerControls : Input -> Game -> Vessel -> Vessel
 updateRunnerControls input game vessel = 
     let
     tarVessel = ensureTarget game vessel vessel.controls.tarID
-    (beamFire,torpFire,x,y,tarID) = 
+    (fireT,fireB,x,y,tarID) = 
         case tarVessel of
             Nothing -> (False,False,0,1,Nothing)
             Just tar -> ( True,True
@@ -638,7 +804,7 @@ updateRunnerControls input game vessel =
                         , Just tar.id)
     controls = vessel.controls 
     controls' = {controls| x<- -x , y<-y 
-                , torpFire <- torpFire , beamFire <- beamFire
+                , fireT <- fireT , fireB <- fireB
                 , tarID <- tarID
                 }
     in
@@ -667,92 +833,46 @@ updateVessel input game id vessel =
     va = controls.x * vessel.turn 
     in
     vessel |> rotObj t va |> accObj t acc |> moveObj t |> dragObj t 
-           |> updateDef t |> updateOff t  
+           |> stepVesselState |> stepShields t |> stepBlinks t
+           |> stepBeamWpn t |> stepTorpWpn t 
+           |> clearEphemera 
 
-updateDef : Time.Time -> Vessel -> Vessel
-updateDef t vessel = 
+stepVesselState : Vessel -> Vessel
+stepVesselState vessel =
     let
-    state' = if vessel.def.shields < 0 then VesselDead else VesselActive
-    def = vessel.def
-    def' = {def| shields <- def.shields + t * def.shieldRegen 
-                            |> min def.shieldMax 
-                , blinks <- def.blinks + t * def.blinkRegen 
-                            |> min def.blinkMax 
-                }
-    in
-    {vessel| state <- state' 
-            , def <- def' 
-            }
+    state' = if | vessel.shields.cur < 0 -> VesselDead
+                | otherwise -> VesselActive 
+    in 
+    {vessel| state <- state' }
 
-updateOff : Time.Time -> Vessel -> Vessel
-updateOff t vessel =
-    {vessel| torpReload <- vessel.torpReload - t |> max 0 
-            , beamReload <- vessel.beamReload - t |> max 0
-            }
-
-
-updateBooms : Input -> Game -> Game
-updateBooms input game = 
-    let
-    t = input.tick
-    booms' = List.filterMap updateBoom game.booms
-    updateBoom boom = if boom.age > boomMaxAge then Nothing else
-        {boom| age <- boom.age+t , r <- boom.r + t*boomGrowthRate} |> Just
-    in
-    {game| booms <- booms'}
-
-
-
-updateFlashes : Input -> Game -> Game
-updateFlashes input game = 
-    let
-    t = input.tick
-    update flash = if flash.age > flashMaxAge then Nothing else
-        {flash| age <- flash.age+t , r <- flash.r - t*flashShrinkRate}|> Just
-    flashes' = List.filterMap update game.flashes
-    in
-    {game| flashes <- flashes'}
-
+clearEphemera : Vessel -> Vessel 
+clearEphemera vessel =
+    {vessel| children <- initChildren }
 
 
 updateTorps : Input -> Game -> Game
 updateTorps input game = 
-    let 
-    t = input.tick
-    vessels' = Dict.map (updateTorpSeekingVessel t) game.vessels  
-    children = Dict.values vessels' |> List.map .children 
-    newBooms = List.concatMap .booms children
-    newFlashes = List.concatMap .flashes children
+    let
+    vessels' = Dict.map (updateTorpSeekingVessel input.tick) game.vessels  
     in 
     {game| vessels <- vessels' 
-         , booms <- List.append newBooms game.booms
-         , flashes <- List.append newFlashes game.flashes
          }
 
 updateTorpSeekingVessel : Time.Time -> Int -> Vessel -> Vessel
 updateTorpSeekingVessel t id vessel =
     let
     children = vessel.children
-    def = vessel.def
     seekedBy' = List.filterMap (moveTorp t vessel) vessel.seekedBy
-    (seekedBy'',damage,booms') =
+    (seekedBy'',dmg,booms') =
         List.foldl (collideTorp vessel) ([],0,[]) seekedBy' 
-    (damage',blinks',(x', y'),flashes') = 
-        if damage == 0 then (damage,def.blinks,(vessel.x,vessel.y),[]) else
-        if def.blinks < 1 then (damage,def.blinks,(vessel.x,vessel.y),[]) else 
-        let
-        xy = (vessel.x,vessel.y)
-        xy' = blinkJump xy
-        r = vessel.r
-        in
-        (0,def.blinks-1,xy',[createFlash xy r,createFlash xy' r])
-    def' = {def| shields <- def.shields - damage' , blinks <- blinks'}
-    children' = {children| booms <- booms' , flashes <- flashes' }
+    children' = {children| booms <- children.booms ++ booms' }
+    vessel' = {vessel| children <- children' , seekedBy<-seekedBy''}
     in 
-    {vessel| x<-x' , y<-y'
-           , seekedBy <- seekedBy'' 
-           , children <- children' 
-           , def <- def' }
+    if | dmg == 0 -> vessel' 
+       | canActivate vessel'.blinks -> vessel' |> applyBlink
+       | otherwise -> vessel' |> applyDmg dmg 
+
+
 
 moveTorp : Time.Time -> Vessel -> Torpedo -> Maybe Torpedo
 moveTorp t vessel torp = 
@@ -794,31 +914,35 @@ createBoom obj =
     
 
 
-updateTorpLaunches : Input -> Game -> Game
-updateTorpLaunches input game =
+fireTorps : Input -> Game -> Game
+fireTorps input game =
     let
     (shooters, newTorps) = 
         Dict.values game.vessels 
-        |> List.filterMap (launchTorp game) 
+        |> List.filterMap (fireTorp game) 
         |> List.unzip 
     vessels' = Dict.union (Dict.fromList shooters) game.vessels
     vessels'' = List.foldl attachTorpedoes vessels' newTorps
     in
     {game| vessels <- vessels'' }       
 
-launchTorp : Game -> Vessel -> Maybe ((Int,Vessel),(Int,Torpedo))
-launchTorp game vessel = 
+fireTorp : Game -> Vessel -> Maybe ((Int,Vessel),(Int,Torpedo))
+fireTorp game vessel = 
     let
-    reallyLaunchTorpedo vessel target =
-        ( (vessel.id , {vessel| torpReload <- torpReload } )
+    torpWpn = vessel.torp
+    canFire vessel = 
+        if | vessel.controls.fireT |> not -> False
+           | canActivate torpWpn -> True
+           | otherwise ->  False
+    reallyFireTorp vessel target =
+        ( (vessel.id , {vessel| torp <- activate torpWpn } )
         , ( target.id , torpSpawn vessel )
         )
     in
-    if vessel.controls.torpFire == False then Nothing else
-    if vessel.torpReload > 0 then Nothing else
+    if canFire vessel |> not then Nothing else 
     case maybeGetVessel game vessel.controls.tarID of
         Nothing -> Nothing
-        Just target -> reallyLaunchTorpedo vessel target |> Just       
+        Just target -> reallyFireTorp vessel target |> Just       
 
 torpSpawn : Vessel -> Torpedo
 torpSpawn shooter =
@@ -828,7 +952,7 @@ torpSpawn shooter =
     { x = shooter.x , y = shooter.y 
     , vx = shooter.vx + vec.x * torpSpeed
     , vy = shooter.vy + vec.y * torpSpeed
-    , a = 0 , r = torpDetRadius , drag = 0
+    , a = 0 , r = torpDetRadius , drag = torpDrag
     , age = 0}
 
 attachTorpedoes : (Int , Torpedo) 
@@ -842,6 +966,113 @@ attachTorpedoes (id , torp) vessels =
             in Dict.insert id vessel' vessels
 
 
+
+fireBeams : Input -> Game -> Game
+fireBeams input game = 
+    let 
+    (shooters,beams) = Dict.values game.vessels 
+               |> List.filterMap (fireBeam game) |> List.unzip
+    vessels' = Dict.union (Dict.fromList shooters) game.vessels
+    vessels'' = List.foldl attachBeams vessels' beams 
+    in 
+    {game| vessels <- vessels'' }
+
+fireBeam : Game -> Vessel -> Maybe ((Int,Vessel),(Int,Float,(Beam,Beam)))
+fireBeam game vessel = 
+    let
+    beamWpn = vessel.beam
+    canFire vessel = 
+        if | vessel.controls.fireB |> not -> False
+           | canActivate beamWpn -> True
+           | otherwise ->  False
+    canHit vessel target = 
+        if | distance vessel target > beamWpn.range -> False
+           | ((faceObj vessel target) - vessel.a |> abs) > beamWpn.arc -> False
+           | otherwise -> True         
+    reallyFireBeam vessel target = 
+        ( (vessel.id , {vessel| beam <- activate beamWpn } )
+        , ( target.id , beamWpn.dmg ,createBeam vessel target)
+        )
+    in
+    if canFire vessel |> not then Nothing else
+    case maybeGetVessel game vessel.controls.tarID of
+        Nothing -> Nothing
+        Just target -> if canHit vessel target |> not then Nothing else
+            reallyFireBeam vessel target |> Just     
+
+createBeam : Object a -> Object b -> (Beam,Beam)
+createBeam obj1 obj2 =
+    let
+    hit = {start=(obj1.x,obj1.y),end=(obj2.x,obj2.y),age=0}
+    miss = { start = (obj1.x,obj1.y)
+           , end = ( obj1.x + 3 * (obj2.x-obj1.x) 
+                   , obj1.y + 3 * (obj2.y-obj1.y) ) 
+           , age = 0}
+    in
+    (hit,miss)
+
+attachBeams : (Int , Float , (Beam,Beam))
+                -> Dict.Dict Int Vessel
+                -> Dict.Dict Int Vessel 
+attachBeams (id , dmg , (hit,miss)) vessels = 
+    case Dict.get id vessels of
+    Nothing -> vessels
+    Just vessel -> 
+        let 
+        children = vessel.children 
+        vessel' = 
+            if canActivate vessel.blinks 
+            then 
+                let
+                children' = 
+                    {children| beams <- miss :: children.beams }
+                in
+                {vessel| children <- children'} |> applyBlink
+            else
+                let
+                children' = 
+                    {children| beams <- hit :: children.beams 
+                    , booms <- (createBoom vessel) :: children.booms }
+                in
+                {vessel| children <- children'} |> applyDmg dmg 
+        in Dict.insert id vessel' vessels
+
+
+
+updateEphemera : Input -> Game -> Game
+updateEphemera input game =  
+    let 
+    t = input.tick
+    eph = game.ephemera
+    beams' = List.filterMap updateBeam eph.beams
+    updateBeam beam = if beam.age > beamMaxAge then Nothing else
+        {beam| age <- beam.age+t } |> Just 
+    booms' = List.filterMap updateBoom eph.booms
+    updateBoom boom = if boom.age > boomMaxAge then Nothing else
+        {boom| age <- boom.age+t , r <- boom.r + t*boomGrowthRate} |> Just
+    flashes' = List.filterMap updateFlash eph.flashes
+    updateFlash flash = if flash.age > flashMaxAge then Nothing else
+        {flash| age <- flash.age+t , r <- flash.r - t*flashShrinkRate}|> Just
+    eph' = {eph| beams <- beams' , booms <- booms' , flashes <- flashes' }
+    in 
+    {game| ephemera <- eph' }
+
+
+
+collectEphemera : Game -> Game
+collectEphemera game = 
+    let 
+    ephemera = game.ephemera
+    children = Dict.values game.vessels |> List.map .children
+    newBooms = List.concatMap .booms children
+    newFlashes = List.concatMap .flashes children
+    newBeams = List.concatMap .beams children
+    ephemera' = {ephemera| booms <- ephemera.booms ++ newBooms 
+                , flashes <- ephemera.flashes ++ newFlashes
+                , beams <- ephemera.beams ++ newBeams 
+                }
+    in
+    {game| ephemera <- ephemera' }
 
 
 updateCamera : Game -> Game
@@ -860,10 +1091,12 @@ cullVessels game =
     let
     f id vessel = vessel.state == VesselDead 
     (culled,vessels') = Dict.partition f game.vessels
-    booms' = Dict.values culled |> List.map createBoom 
-             |> List.append game.booms
+    newBooms = Dict.values culled |> List.map createBoom 
+              -- |> List.append game.booms
+    eph = game.ephemera
+    eph' = {eph| booms <- newBooms ++ eph.booms }
     in 
-    {game| vessels <- vessels' , booms <- booms' }
+    {game| vessels <- vessels' , ephemera <- eph' }
 
 
 
@@ -934,6 +1167,7 @@ view (w,h) game =
     , viewStarsImg game                     -- draw the starfield
     , viewPlanet game                       -- draw the planet
     , viewTorpedoes game                    -- draw torps
+    , viewBeams game                        -- draw beams
     , viewVessels game                      -- draw vessels
     , viewFlashes game                      -- draw FTL flashes
     , viewBooms game                        -- draw explosions
@@ -969,6 +1203,27 @@ viewPlanet game =
     in
     Element.image d d img |> Collage.toForm |> Collage.move (-cx,-cy)
 
+viewBeams game = 
+    let
+    (cx,cy) = game.camera
+    beams = Dict.values game.vessels |> List.map .children 
+            |> List.concatMap .beams
+    drawBeam beam = 
+        let
+        ageRatio = beam.age / beamMaxAge
+        (color,width) = if | ageRatio > 0.75 -> (Color.darkBlue , 1)
+                           | ageRatio > 0.5 -> (Color.lightBlue , 2)
+                           | ageRatio > 0.25 -> (Color.white , 3)
+                           | otherwise -> (Color.lightBlue , 2) 
+        lineStyle = Collage.solid color  
+        in
+        Collage.segment beam.start beam.end 
+                    |> Collage.traced {lineStyle| width <- width}
+    in
+    game.ephemera.beams |> List.map drawBeam |> Collage.group 
+    |> Collage.move (-cx,-cy)
+
+
 viewTorpedoes game =
     let 
     (cx,cy) = game.camera
@@ -978,9 +1233,9 @@ viewTorpedoes game =
         ageMod = (torp.age * 10 |> floor) % 4
         (color,radius) 
             = if | ageMod == 0 -> (Color.white , 2 )
-                 | ageMod == 1 ->  (Color.lightBlue , 2.5 )
-                 | ageMod == 2 ->  (Color.darkBlue , 3 )
-                 | ageMod == 3 ->  (Color.lightBlue , 2.5 )
+                 | ageMod == 1 -> (Color.lightBlue , 2.5 )
+                 | ageMod == 2 -> (Color.darkBlue , 3 )
+                 | ageMod == 3 -> (Color.lightBlue , 2.5 )
         in
         Collage.circle radius
         |> Collage.filled color
@@ -1021,7 +1276,7 @@ viewBooms game =
         Collage.circle boom.r |> Collage.filled color 
         |> Collage.move ( boom.x - cx , boom.y - cy )
     in
-    game.booms |> List.map boomDraw |> Collage.group
+    game.ephemera.booms |> List.map boomDraw |> Collage.group
 
 
 viewFlashes game = 
@@ -1037,7 +1292,7 @@ viewFlashes game =
         Collage.circle flash.r |> Collage.filled color
         |> Collage.move ( flash.x - cx , flash.y - cy )
     in
-    game.flashes |> List.map flashDraw |> Collage.group
+    game.ephemera.flashes |> List.map flashDraw |> Collage.group
 
 -- given a string message, make an element of it    
 drawText : String -> Element.Element
@@ -1058,8 +1313,8 @@ viewPanes game =
     Nothing -> Element.empty |> Collage.toForm 
     Just player -> 
     let
-    pxy = (80-halfW,halfH-10)
-    txy = (80-halfW,10-halfH)
+    pxy = (150-halfW,halfH-10)
+    txy = (150-halfW,10-halfH)
     playerPane = drawVesselPane player pxy
     targetPane =
         case maybeGetVessel game player.controls.tarID of
@@ -1071,8 +1326,10 @@ viewPanes game =
 
 drawVesselPane vessel xy =
     [ Element.image 20 20 vessel.image
-    , drawText (" Shields: " ++ toString (floor vessel.def.shields))
-    , drawText (" Blinks: " ++ toString (floor vessel.def.blinks))
+    , drawText (" Shields: " ++ toString (floor vessel.shields.cur))
+    , drawText (" Blinks: " ++ toString (floor vessel.blinks.cur))
+    , drawText (" Beams: " ++ toString (floor vessel.beam.cur))
+    , drawText (" Torps: " ++ toString (floor vessel.torp.cur))
     ] 
     |> Element.flow Element.right 
     |> Element.color Color.darkBlue 
