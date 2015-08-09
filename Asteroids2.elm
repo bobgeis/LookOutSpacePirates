@@ -177,8 +177,9 @@ type alias Game =
     , camera : (Float,Float)        -- The coordinates of the camera
     , nextID : Int                  -- the ID for the next vessel to spawn
     , vessels : Dict.Dict Int Vessel -- Dict containing all the vessels
+    , navPts : List NavPt             -- Nav Points
     , time : Time.Time              -- so we know when the timer is up
-    , ephemera : Children
+    , ephemera : Children           
     , booms : List Boom             -- explosions
     , flashes : List Flash          -- FTL flashes
     , beams : List Beam             -- the beam effects
@@ -191,6 +192,7 @@ startGame =
     , camera = (0,0)
     , nextID = 4
     , vessels = startingVessels
+    , navPts = []
     , time = 0
     , ephemera = initChildren 
     , booms = []
@@ -198,7 +200,41 @@ startGame =
     , beams = []
     }
 
+-- nav points represent background planets and kickpoints
+type alias NavPt = 
+    { x:Float , y:Float             -- position on the game board
+    , view:Collage.Form             -- how it is drawn (shouldn't animate?)
+    , kick:Bool                     -- kickpoint? 
+    , dock:Bool                     -- dockable? 
+    }
 
+startingNavPts : List NavPt
+startingNavPts = 
+    --[]
+    {--}
+    [ neptuneWorld ]
+    {-}
+    img = "images/3D_Neptune2.png"
+    d = 100
+    in
+    Element.image d d img |> Collage.toForm
+    --}
+
+neptuneWorld : NavPt
+neptuneWorld = 
+    let
+    view = Element.image 100 100 "images/3D_Neptune2.png" |> Collage.toForm
+    in 
+    {x=0,y=0,view=view,kick=False,dock=False}
+
+createKickPt : NavPt
+createKickPt = neptuneWorld
+    {-}
+    let
+    view = drawText name + drawcircle
+    in
+    {x=x,y=y,view=view,kick=True,dock=False}
+    --}
 
 type alias Object a =                -- a space object
     { a | x:Float , y:Float          -- position (px)
@@ -1172,7 +1208,8 @@ view (w,h) game =
     , viewFlashes game                      -- draw FTL flashes
     , viewBooms game                        -- draw explosions
     , viewText game                         -- draw data text
-    , viewPanes game                    
+    , viewPanes game                        -- draw HUD components
+    , drawMiniMap game                      -- draw the minimap
     ]
 
 viewSky : Collage.Form
@@ -1211,10 +1248,10 @@ viewBeams game =
     drawBeam beam = 
         let
         ageRatio = beam.age / beamMaxAge
-        (color,width) = if | ageRatio > 0.75 -> (Color.darkBlue , 1)
-                           | ageRatio > 0.5 -> (Color.lightBlue , 2)
-                           | ageRatio > 0.25 -> (Color.white , 3)
-                           | otherwise -> (Color.lightBlue , 2) 
+        (color,width) = if | ageRatio > 0.75 -> (Color.darkBlue , 2)
+                           | ageRatio > 0.5 -> (Color.lightBlue , 3)
+                           | ageRatio > 0.25 -> (Color.white , 4)
+                           | otherwise -> (Color.lightBlue , 3) 
         lineStyle = Collage.solid color  
         in
         Collage.segment beam.start beam.end 
@@ -1337,6 +1374,37 @@ drawVesselPane vessel xy =
     |> Collage.toForm 
     |> Collage.move xy
 
+
+drawMiniMap game = 
+    let
+    (cx,cy) = game.camera
+    dist = cx^2 + cy^2 |> sqrt
+    scale = if | dist < 2000 -> 3000
+               | dist < 5000 -> 7500
+               | dist < 10000 -> 15000
+               | dist < 20000 -> 30000
+               | dist < 50000 -> 75000
+               | otherwise -> 3e5
+    size = 50
+    player = getVessel game game.playerID
+    color vessel = 
+        case vessel.faction of 
+            1 -> Color.lightYellow
+            2 -> Color.red
+            3 -> Color.green
+    f1 v = (color v , v.x , v.y )
+    f2 (color,x,y) = 
+            if (abs x > scale) || (abs y > scale) then Nothing else
+            Collage.circle 2 |> Collage.filled color 
+            |> Collage.move (x/scale*size,y/scale*size) |> Just
+    dots = Dict.values game.vessels |> List.map f1 
+           |> List.filterMap f2 |> Collage.group 
+    in
+    [ Collage.square (size*2) |> Collage.filled Color.charcoal 
+    , dots
+    ] 
+    |> Collage.group |> Collage.alpha 0.5 
+    |> Collage.move (halfW-size-5,halfH-size-5)
 
 
 

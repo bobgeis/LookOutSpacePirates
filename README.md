@@ -2,6 +2,9 @@
 
 This is an incomplete browser game written in elm and inspired by 2D spaceship sims like Escape Velocity and SPAZ (Space Pirates And Zombies).  It builds off the work done for LookOutSpaceRocks, so the controls are similar.
 
+Should be playable in its current state here:
+http://bobgeis.github.io/LookOutSpacePirates/
+
 Controls: 
 - arrow keys to steer and accelerate 
 - r key to target nearest hostile
