@@ -1,0 +1,19 @@
+<html>
+    <head>
+        <title>LOOK OUT! SPACE ROCKS!</title>
+        <script type="text/javascript" src="elm.js"></script>
+        <style>
+            body {background-color:#000040}
+        </style>
+    </head>
+
+    <body>
+        <div id="asteroids" style="width:100%;height:100%"></div>
+    </body>
+
+    <script type="text/javascript">
+        var asteroidsDiv = document.getElementById('asteroids');
+        Elm.embed(Elm.Asteroids2, asteroidsDiv);
+    </script>
+</html>
+
